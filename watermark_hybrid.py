@@ -6,6 +6,8 @@ from functools import reduce
 from rid_utils import *
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from Crypto.Cipher import ChaCha20
+from Crypto.Random import get_random_bytes
 
 # 假设 util.py 中的 fft, ifft, ring_mask, make_Fourier_ringid_pattern 已在全局作用域可用
 # 或者你可以通过 import 引入
@@ -22,10 +24,12 @@ class HybridWatermarker:
                  user_number=1,
                  user_id=0,
                  # 设为 True 以打印acc/distance、可视化水印情况
-                 debug: bool = False):
+                 debug: bool = False,
+                 use_chacha: bool = False):
         
         self.device = device
         self.debug = debug
+        self.use_chacha = use_chacha
         
         # --- 1. Gaussian Shading 配置 (针对 HETER_WATERMARK_CHANNEL) ---
         self.gs_ch = gs_ch_factor
@@ -68,6 +72,7 @@ class HybridWatermarker:
 
         # 密钥信息
         self.gs_key = None
+        self.gs_nonce = None
         self.gs_msg = None
         self.ring_message = None
         self.ring_key_values = None # RingID 的模式数值
@@ -77,6 +82,40 @@ class HybridWatermarker:
             self._generate_candidate_database(self.user_number)
         self.ring_current_user_id = user_id
         self.output_latents = None
+
+    def _stream_key_encrypt(self, bits: np.ndarray):
+        if not self.use_chacha:
+            return bits
+        self.gs_key = get_random_bytes(32)
+        self.gs_nonce = get_random_bytes(12)
+        cipher = ChaCha20.new(key=self.gs_key, nonce=self.gs_nonce)
+        m_byte = cipher.encrypt(np.packbits(bits).tobytes())
+        m_bit = np.unpackbits(np.frombuffer(m_byte, dtype=np.uint8))[: bits.size]
+        return m_bit
+
+    def _stream_key_decrypt(self, bits: np.ndarray):
+        if not self.use_chacha:
+            return bits
+        cipher = ChaCha20.new(key=self.gs_key, nonce=self.gs_nonce)
+        m_byte = cipher.decrypt(np.packbits(bits).tobytes())
+        m_bit = np.unpackbits(np.frombuffer(m_byte, dtype=np.uint8))[: bits.size]
+        return m_bit
+
+    def _derive_ring_key_nonce(self, user_id: int):
+        gen = torch.Generator(device="cpu").manual_seed(int(user_id))
+        key = torch.randint(0, 256, (32,), generator=gen, dtype=torch.uint8).numpy().tobytes()
+        nonce = torch.randint(0, 256, (12,), generator=gen, dtype=torch.uint8).numpy().tobytes()
+        return key, nonce
+
+    def _ring_encrypt_message(self, user_id: int, message: torch.Tensor):
+        if not self.use_chacha:
+            return message
+        bits = message.flatten().detach().cpu().numpy().astype(np.uint8)
+        key, nonce = self._derive_ring_key_nonce(user_id)
+        cipher = ChaCha20.new(key=key, nonce=nonce)
+        m_byte = cipher.encrypt(np.packbits(bits).tobytes())
+        m_bit = np.unpackbits(np.frombuffer(m_byte, dtype=np.uint8))[: bits.size]
+        return torch.from_numpy(m_bit).to(self.device).reshape(message.shape)
 
     def _calculate_bit_threshold(self, length, fpr, user_num):
         # 简单的阈值计算逻辑，用于判定检测成功
@@ -146,6 +185,7 @@ class HybridWatermarker:
             # 注意：这里需要固定随机种子以保证之后能重新生成同样的 key
             torch.manual_seed(user_id) 
             user_ring_message = torch.randint(0, 2, (self.ring_mark_length, len(self.ring_channels))).to(self.device)
+            user_ring_message = self._ring_encrypt_message(user_id, user_ring_message)
             
             # 2. 映射为数值
             user_key_values = torch.where(user_ring_message == 1, self.ring_value_range, -self.ring_value_range)
@@ -187,11 +227,15 @@ class HybridWatermarker:
         
         # --- 准备 Gaussian Shading (空间域) ---
         # 生成随机 Key 和 Message
-        self.gs_key = torch.randint(0, 2, (len(self.gs_channels), 64, 64), device=self.device)
         self.gs_msg = torch.randint(0, 2, (len(self.gs_channels) // self.gs_ch, 64 // self.gs_hw, 64 // self.gs_hw), device=self.device)
         # 扩展消息并与 Key 异或
         sd = self.gs_msg.repeat(1, self.gs_ch, self.gs_hw, self.gs_hw)
-        m = ((sd + self.gs_key) % 2).cpu().numpy()
+        if self.use_chacha:
+            m_bits = self._stream_key_encrypt(sd.flatten().cpu().numpy())
+            m = m_bits.reshape(len(self.gs_channels), 64, 64)
+        else:
+            self.gs_key = torch.randint(0, 2, (len(self.gs_channels), 64, 64), device=self.device)
+            m = ((sd + self.gs_key) % 2).cpu().numpy()
         gs_w = self._trunc_sampling(m)
         
         # 替换指定通道
@@ -294,7 +338,11 @@ class HybridWatermarker:
         extracted_ch = latents[0, self.gs_channels]
         reversed_m = (extracted_ch > 0).int()
         # 解密
-        reversed_sd = (reversed_m + self.gs_key) % 2
+        if self.use_chacha:
+            reversed_bits = self._stream_key_decrypt(reversed_m.flatten().cpu().numpy())
+            reversed_sd = torch.from_numpy(reversed_bits).to(self.device).reshape(len(self.gs_channels), 64, 64)
+        else:
+            reversed_sd = (reversed_m + self.gs_key) % 2
         channel_accs = []
         for i in range(len(self.gs_channels)):
             reversed_watermark = self._diffusion_inverse(reversed_sd[i:i+1])

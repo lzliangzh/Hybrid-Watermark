@@ -55,7 +55,8 @@ def main(args):
         ring_radius_cutoff=RADIUS_CUTOFF,
         fpr_target=args.fpr,
         user_number=args.user_number,
-        debug=True
+        debug=True,
+        use_chacha=args.chacha
     )
     os.makedirs(args.output_path, exist_ok=True)
 
