@@ -193,16 +193,20 @@ def generate_Fourier_watermark_latents(device, radius, radius_cutoff, watermark_
         raise NotImplementedError('Fourier watermark pattern should be provided.')
 
     # circular_mask = torch.tensor(ring_mask(size = original_latents.shape[-1], r_out = radius, r_in = radius_cutoff)).to(device)
-    watermarked_latents_fft = torch.fft.fftshift(torch.fft.fft2(original_latents), dim = (-1, -2))
+    orig_dtype = original_latents.dtype
+    original_latents_f = original_latents.float()
+    watermarked_latents_fft = torch.fft.fftshift(torch.fft.fft2(original_latents_f), dim = (-1, -2))
 
     # for channel in watermark_channel:
     #     watermarked_latents_fft[:, channel] = watermarked_latents_fft[:, channel] * ~circular_mask + watermark_pattern[:, channel] * circular_mask
     
     assert len(watermark_channel) == len(watermark_region_mask)
+    if watermark_pattern is not None:
+        watermark_pattern = watermark_pattern.to(watermarked_latents_fft.dtype)
     for channel, channel_mask in zip(watermark_channel, watermark_region_mask):
         watermarked_latents_fft[:, channel] = watermarked_latents_fft[:, channel] * ~channel_mask + watermark_pattern[:, channel] * channel_mask
     
-    return torch.fft.ifft2(torch.fft.ifftshift(watermarked_latents_fft, dim = (-1, -2))).real
+    return torch.fft.ifft2(torch.fft.ifftshift(watermarked_latents_fft, dim = (-1, -2))).real.to(orig_dtype)
 
 
 # def image_distortion(img1, img2, seed, 

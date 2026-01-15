@@ -5,9 +5,8 @@ import numpy as np
 import PIL
 
 import torch
-from diffusers import StableDiffusionPipeline, DDIMScheduler, UNet2DConditionModel
+from diffusers import StableDiffusionPipeline
 from diffusers.utils import logging, BaseOutput
-from torchvision.transforms import ToPILImage
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -30,6 +29,7 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
         scheduler,
         safety_checker,
         feature_extractor,
+        image_encoder=None,
         requires_safety_checker: bool = False,
     ):
         super(ModifiedStableDiffusionPipeline, self).__init__(vae,
@@ -39,7 +39,8 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
                 scheduler,
                 safety_checker,
                 feature_extractor,
-                requires_safety_checker)
+                image_encoder=image_encoder,
+                requires_safety_checker=requires_safety_checker)
 
     @torch.no_grad()
     def __call__(
@@ -134,16 +135,24 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
-        text_embeddings = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt
+        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+            prompt,
+            device,
+            num_images_per_prompt,
+            do_classifier_free_guidance,
+            negative_prompt,
         )
+        if do_classifier_free_guidance:
+            text_embeddings = torch.cat([negative_prompt_embeds, prompt_embeds])
+        else:
+            text_embeddings = prompt_embeds
 
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
         # 5. Prepare latent variables
-        num_channels_latents = self.unet.in_channels
+        num_channels_latents = self.unet.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -168,6 +177,30 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                # 兼容部分调度器返回多元素 timestep 的情况
+                if isinstance(t, torch.Tensor) and t.numel() > 1:
+                    t = t.reshape(-1)[0]
+
+                # 某些调度器会把 `timestep` 当作索引处理，若当前 t 不在 timesteps 中则改用索引 i
+                timestep = t
+                use_step_index = False
+                if isinstance(timestep, torch.Tensor) and timestep.numel() == 1:
+                    if isinstance(self.scheduler.timesteps, torch.Tensor):
+                        if self.scheduler.timesteps.numel() > 0:
+                            try:
+                                if not torch.any(self.scheduler.timesteps == timestep):
+                                    use_step_index = True
+                            except RuntimeError:
+                                # device 不一致时，退回到索引
+                                use_step_index = True
+                elif isinstance(timestep, (int, float)):
+                    if isinstance(self.scheduler.timesteps, torch.Tensor):
+                        t_val = int(timestep)
+                        if not torch.any(self.scheduler.timesteps == t_val):
+                            use_step_index = True
+
+                if use_step_index:
+                    timestep = i
                 # add watermark
                 if watermarking_mask is not None:
                     # latents[watermarking_mask] += watermarking_delta
@@ -175,10 +208,10 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                latent_model_input = self.scheduler.scale_model_input(latent_model_input, timestep)
 
                 # predict the noise residual
-                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                noise_pred = self.unet(latent_model_input, timestep, encoder_hidden_states=text_embeddings).sample
 
                 # perform guidance
                 if do_classifier_free_guidance:
@@ -186,16 +219,20 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                latents = self.scheduler.step(noise_pred, timestep, latents, **extra_step_kwargs).prev_sample
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
-                        callback(i, t, latents)
+                        callback(i, timestep, latents)
 
         # 8. Post-processing
-        image = self.decode_latents(latents)
+        image = self.vae.decode(
+            latents / self.vae.config.scaling_factor,
+            return_dict=False,
+        )[0]
+        image = self.image_processor.postprocess(image, output_type="np")
         # 9. Run safety checker
         image, has_nsfw_concept = self.run_safety_checker(image, device, text_embeddings.dtype)
 

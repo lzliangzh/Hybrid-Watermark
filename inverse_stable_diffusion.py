@@ -2,17 +2,7 @@ from functools import partial
 from typing import Callable, List, Optional, Union, Tuple
 
 import torch
-from transformers import  CLIPTextModel, CLIPTokenizer
-
-from diffusers.models import AutoencoderKL, UNet2DConditionModel
-# from diffusers import StableDiffusionPipeline
-from diffusers.pipelines.stable_diffusion.safety_checker import \
-    StableDiffusionSafetyChecker
-from diffusers.schedulers import DDIMScheduler,PNDMScheduler, LMSDiscreteScheduler
-
 from modified_stable_diffusion import ModifiedStableDiffusionPipeline
-from torchvision.transforms import ToPILImage
-import matplotlib.pyplot as plt
 
 
 
@@ -42,6 +32,7 @@ class InversableStableDiffusionPipeline(ModifiedStableDiffusionPipeline):
         scheduler,
         safety_checker,
         feature_extractor,
+        image_encoder=None,
         requires_safety_checker: bool = False,
     ):
 
@@ -52,7 +43,8 @@ class InversableStableDiffusionPipeline(ModifiedStableDiffusionPipeline):
                 scheduler,
                 safety_checker,
                 feature_extractor,
-                requires_safety_checker)
+                image_encoder=image_encoder,
+                requires_safety_checker=requires_safety_checker)
 
         self.forward_diffusion = partial(self.backward_diffusion, reverse_process=True)
         self.count = 0
@@ -64,7 +56,7 @@ class InversableStableDiffusionPipeline(ModifiedStableDiffusionPipeline):
         batch_size = 1
         device = self._execution_device
 
-        num_channels_latents = self.unet.in_channels
+        num_channels_latents = self.unet.config.in_channels
 
         latents = self.prepare_latents(
             batch_size,

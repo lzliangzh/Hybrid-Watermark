@@ -89,9 +89,10 @@ class HybridWatermarker:
     def _trunc_sampling(self, message):
         """Gaussian Shading 的截断正态采样"""
         m_flat = message.flatten()
-        z = np.zeros_like(m_flat, dtype=np.float32)
-        ppf = [norm.ppf(0), norm.ppf(0.5), norm.ppf(1)]
-        for i, val in enumerate(m_flat):
+        m_bin = (m_flat > 0.5).astype(np.int64)
+        z = np.zeros_like(m_bin, dtype=np.float32)
+        ppf = [norm.ppf(0.0), norm.ppf(0.5), norm.ppf(1.0)]
+        for i, val in enumerate(m_bin):
             z[i] = truncnorm.rvs(ppf[int(val)], ppf[int(val) + 1])
         return torch.from_numpy(z).reshape(len(self.gs_channels), 64, 64).to(self.device).half()
 
@@ -110,6 +111,7 @@ class HybridWatermarker:
             # 执行 FFT
             # 假设 fft 函数返回的是复数张量
             ch_fft = fft(output_latents[:, ch:ch+1])[0, 0].real.detach().cpu().numpy()
+            ch_fft = np.nan_to_num(ch_fft, nan=0.0, posinf=0.0, neginf=0.0)
             
             im = axes[i].imshow(ch_fft, cmap='RdBu_r', vmin=-64, vmax=64)
             axes[i].set_title(f"Channel {ch} FFT (Real Part)")
@@ -119,6 +121,7 @@ class HybridWatermarker:
         for i, ch in enumerate(self.gs_channels):
             # 直接显示空域数值
             ch_spatial = latents[ch].numpy()
+            ch_spatial = np.nan_to_num(ch_spatial, nan=0.0, posinf=0.0, neginf=0.0)
             
             # Gaussian Shading 的值通常在 [-2, 2] 左右（截断正态分布）
             im = axes[i+2].imshow(ch_spatial, cmap='viridis')
