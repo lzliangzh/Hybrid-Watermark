@@ -2,7 +2,7 @@
 
 ## Method
 
-![method](fig/hybrid-framework.png)
+![method](assets/hybrid-framework.png)
 
 
 ### Improved compared with Gaussian Shading
@@ -52,7 +52,7 @@ This repository hosts the official PyTorch implementation of the paper: ["**Gaus
 
 ## Method
 
-![method](fig/framework.png)
+![method](assets/framework.png)
 
 We propose a watermarking method named Gaussian Shading, designed to ensure no
 deterioration in model performance. The embedding process encompasses three primary elements: watermark diffuse, randomization, and distribution-preserving sampling. Watermark diffusion spreads the watermark information throughout the latent representation to enhance the robustness. Watermark randomization and distribution preserving sampling guarantee the congruity of the latent representation distribution with that of watermark-free latent representations, thereby achieving performance-lossless. In the extraction phase, the latent representations are acquired through Denoising Diffusion Implicit Model (DDIM) inversion, allowing for the retrieval of watermark information. 

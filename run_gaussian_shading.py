@@ -2,13 +2,12 @@ import argparse
 import copy
 from tqdm import tqdm
 import torch
-from transformers import CLIPModel, CLIPTokenizer
-from inverse_stable_diffusion import InversableStableDiffusionPipeline
+from transformers import CLIPModel, CLIPProcessor
+from stable_diffusion.inverse_stable_diffusion import InversableStableDiffusionPipeline
 from diffusers import DPMSolverMultistepScheduler, DDIMScheduler
-import open_clip
-from optim_utils import *
-from io_utils import *
-from image_utils import *
+from utils.optim_utils import *
+from utils.io_utils import *
+from utils.image_utils import *
 from watermark_hybrid import *
 
 
@@ -25,7 +24,7 @@ def main(args):
     pipe = InversableStableDiffusionPipeline.from_pretrained(
             args.model_path,
             scheduler=scheduler,
-            torch_dtype=torch.float16,
+            dtype=torch.float16,
             # revision='fp16',
     )
     pipe.safety_checker = None
@@ -33,10 +32,8 @@ def main(args):
 
     #reference model for CLIP Score
     if args.reference_model is not None:
-        ref_model, _, ref_clip_preprocess = open_clip.create_model_and_transforms(args.reference_model,
-                                                                                  pretrained=args.reference_model_pretrain,
-                                                                                  device=device)
-        ref_tokenizer = open_clip.get_tokenizer(args.reference_model)
+        ref_model = CLIPModel.from_pretrained(args.reference_model).to(device)
+        ref_clip_processor = CLIPProcessor.from_pretrained(args.reference_model)
 
     # dataset
     dataset, prompt_key = get_dataset(args)
@@ -58,7 +55,8 @@ def main(args):
         ring_radius_cutoff=RADIUS_CUTOFF,
         fpr_target=args.fpr,
         user_number=args.user_number,
-        debug=True
+        debug=True,
+        use_chacha=args.chacha
     )
     os.makedirs(args.output_path, exist_ok=True)
 
@@ -142,8 +140,7 @@ def main(args):
         #CLIP Score
         if args.reference_model is not None:
             socre = measure_similarity([image_w], current_prompt, ref_model,
-                                              ref_clip_preprocess,
-                                              ref_tokenizer, device)
+                                              ref_clip_processor, device)
             clip_socre = socre[0].item()
         else:
             clip_socre = 0

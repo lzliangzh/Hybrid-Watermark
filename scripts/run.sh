@@ -1,4 +1,3 @@
-export HF_ENDPOINT=https://hf-mirror.com
 # python  run_gaussian_shading.py   
 # python  run_gaussian_shading.py   --random_crop_ratio 0.6  
 # python  run_gaussian_shading.py   --random_drop_ratio 0.8 

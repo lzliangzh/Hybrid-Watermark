@@ -5,12 +5,13 @@ import json
 import torch
 import os
 from statistics import mean, stdev
-from inverse_stable_diffusion import InversableStableDiffusionPipeline
+from stable_diffusion.inverse_stable_diffusion import InversableStableDiffusionPipeline
 from diffusers import DPMSolverMultistepScheduler
-from optim_utils import *
-from io_utils import *
-from image_utils import *
+from utils.optim_utils import *
+from utils.io_utils import *
+from utils.image_utils import *
 from pytorch_fid.fid_score import *
+from watermark import *
 
 
 def main(args):
@@ -20,8 +21,8 @@ def main(args):
     pipe = InversableStableDiffusionPipeline.from_pretrained(
             args.model_path,
             scheduler=scheduler,
-            torch_dtype=torch.float16,
-            revision='fp16',
+            dtype=torch.float16,
+            # revision='fp16',
     )
     pipe.safety_checker = None
     pipe = pipe.to(device)
@@ -94,7 +95,7 @@ if __name__ == '__main__':
     parser.add_argument('--prompt_file', default='./fid_outputs/coco/meta_data.json')
     parser.add_argument('--gt_folder', default='./fid_outputs/coco/ground_truth')
     parser.add_argument('--output_path', default='./output/')
-    parser.add_argument('--model_path', default='stabilityai/stable-diffusion-2-1-base')
+    parser.add_argument('--model_path', default='manojb/stable-diffusion-2-1-base')
     parser.add_argument('--chacha', action='store_true', help='chacha20 for cipher')
 
     args = parser.parse_args()
